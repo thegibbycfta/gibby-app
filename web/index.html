@@ -720,7 +720,7 @@ function goHome(){ PF_PHOTO=null; PF_SKILLS=null; RESUB=null; RESUB_OLD_ID=null;
 const MORE_ITEMS=[['all','\u{1F4CB}','All classes','Classes'],
   ['money','\u{1F4B0}','Money','Money'],['supplies','\u{1F9FA}','Orders','Money'],
   ['reviews','\u{1F5BC}\uFE0F','Website page','Reach'],['marketing','\u{1F4E3}','Marketing','Reach'],['email','\u2709\uFE0F','Email','Reach'],['integrations','\u{1F50C}','Integrations','Reach'],
-  ['agreements','\u{1F4DD}','Contracts','Records'],['incidents','\u{1F6A8}','Incidents','Records'],['audit','\u{1F50D}','Audit','Records'],['archive','\u{1F5C3}\uFE0F','Archive','Records']];
+  ['agreements','\u{1F4DD}','Contracts','Records'],['incidents','\u{1F6A8}','Incidents','Records'],['audit','\u{1F50D}','Audit','Records'],['database','\u{1F5C4}','Database','Records'],['schedule','\u{1F5D3}\uFE0F','Schedules','Records'],['archive','\u{1F5C3}\uFE0F','Archive','Records']];
 const MORE_GROUPS=['Classes','Money','Reach','Records'];
 /* A tab left open across a deploy keeps old code and can misread new answers.
    Watch the version and reload quietly when nothing is half-typed. */
@@ -1367,7 +1367,7 @@ async function renderAdmin(tab){
   // nav and the rest of the app stay intact; only this panel shows the fallback.
   const SECTIONS={dashboard:adminDashboard, slots:adminSlots, approvals:adminApprovals,
     templates:adminTemplates, calendar:adminCalendar, connections:adminIntegrations, integrations:adminIntegrations, email:adminEmail, ebimport:adminEbImport, calreview:adminCalReview, requests:adminRequests, supplies:adminSupplies, incidents:adminIncidents, reviews:adminReviews, agreements:adminAgreements,
-    all:adminAll, money:adminMoney, marketing:adminMarketing, people:adminPeople, audit:adminAudit, archive:adminArchive};
+    all:adminAll, money:adminMoney, marketing:adminMarketing, people:adminPeople, audit:adminAudit, database:adminDatabase, schedule:adminSchedule, archive:adminArchive};
   loadNavBadges();
   const fn=SECTIONS[tab]||adminDashboard;
   return boundary('admin:'+tab, '#tab', fn);
@@ -2751,6 +2751,73 @@ async function adminMoney(){
       agreed amount whatever the turnout, and split classes pay 60% of actual ticket sales after materials.
       Where an instructor supplies their own materials the cost is reimbursed inside their pay, so it is
       not charged to The Gibby a second time.</div>`}`;
+}
+
+/* ---------------- database browser (read-only) ---------------- */
+let DB_BROWSER_SEARCH_TIMER=null;
+async function adminDatabase(){
+  const d=await api('/api/admin/db-tables');
+  const tables=d.tables||[];
+  const prettyBytes=value=>{let unitIndex=0;while(value>=1024&&unitIndex<3){value/=1024;unitIndex++;}return value.toFixed(unitIndex?1:0)+' '+['B','KB','MB','GB'][unitIndex];};
+  $('#tab').innerHTML=`<div class="row"><div><h2>Database <em>viewer</em></h2>
+    <p class="sub">${tables.length} tables · ${prettyBytes(d.db_bytes||0)} on disk · read-only</p></div>
+    <button class="btn ghost" title="Refresh tables" onclick="adminDatabase()">Refresh</button></div>
+    <div class="meta" style="margin:0 0 12px">Passwords, tokens, signatures, images, files, and serialized payloads are redacted. Search covers visible text columns only.</div>
+    <div class="two"><div><label>Table</label><select id="db_table" onchange="dbBrowserLoad(1)">
+      ${tables.map(t=>`<option value="${esc(t.name)}">${esc(t.name)} · ${Number(t.rows).toLocaleString()} rows</option>`).join('')}
+    </select></div><div><label>Search this table</label><input id="db_search" placeholder="Search visible text" oninput="dbBrowserSearch()"></div></div>
+    <div id="db_rows" style="margin-top:12px">${tables.length?'Loading rows...':'<div class="muted">No tables found.</div>'}</div>`;
+  if(tables.length) await dbBrowserLoad(1);
+}
+function dbBrowserSearch(){
+  clearTimeout(DB_BROWSER_SEARCH_TIMER);
+  DB_BROWSER_SEARCH_TIMER=setTimeout(()=>dbBrowserLoad(1),250);
+}
+async function dbBrowserLoad(page){
+  const host=$('#db_rows'), table=$('#db_table');
+  if(!host||!table)return;
+  host.innerHTML='<div class="muted">Loading rows...</div>';
+  const query=new URLSearchParams({table:table.value,page:String(page),q:$('#db_search')?.value||''});
+  const d=await api('/api/admin/db-rows?'+query.toString());
+  if(!$('#db_rows'))return;
+  const columns=d.columns||[], rows=d.rows||[];
+  const body=rows.map(row=>'<tr>'+columns.map(col=>{
+    const value=row[col.name];
+    return `<td style="max-width:320px;white-space:pre-wrap;overflow-wrap:anywhere">${value==null?'<span class="muted">NULL</span>':esc(value)}</td>`;
+  }).join('')+'</tr>').join('');
+  host.innerHTML=`<div class="row" style="margin-bottom:8px"><div class="meta">${Number(d.total).toLocaleString()} row${d.total===1?'':'s'} · page ${d.pages?d.page:0} of ${d.pages}</div>
+    <div style="display:flex;gap:6px"><button class="btn ghost" onclick="dbBrowserLoad(${Math.max(1,d.page-1)})" ${d.page<=1?'disabled':''} aria-label="Previous page">Previous</button>
+    <button class="btn ghost" onclick="dbBrowserLoad(${Math.min(d.pages,d.page+1)})" ${d.page>=d.pages?'disabled':''} aria-label="Next page">Next</button></div></div>
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:8px"><table style="border-collapse:collapse;min-width:100%;font-size:12px">
+      <thead><tr>${columns.map(col=>`<th style="position:sticky;top:0;background:var(--paper);text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap">${esc(col.name)}${col.redacted?' <span class="muted">(redacted)</span>':''}</th>`).join('')}</tr></thead>
+      <tbody>${body||`<tr><td class="muted" colspan="${Math.max(1,columns.length)}" style="padding:12px">No matching rows.</td></tr>`}</tbody>
+    </table></div>`;
+}
+
+/* ---------------- scheduled jobs (read-only) ---------------- */
+async function adminSchedule(){
+  const d=await api('/api/admin/schedule');
+  const interval=seconds=>seconds%3600===0?(seconds/3600)+' hour'+(seconds===3600?'':'s'):(seconds/60)+' minutes';
+  const deadline=d.deadline_campaign||{};
+  $('#tab').innerHTML=`<div class="row"><div><h2>Scheduled <em>tasks</em></h2>
+    <p class="sub">Read-only inventory from the scheduler manifest. Calendar sync checks every ${interval(d.calendar_sync_interval_seconds)}.</p></div>
+    <button class="btn ghost" title="Refresh schedule" onclick="adminSchedule()">Refresh</button></div>
+    <label>Automatic tasks</label>
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:20px"><table style="border-collapse:collapse;min-width:100%;font-size:12.5px">
+      <thead><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Task</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Effective cadence</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Handler</th></tr></thead>
+      <tbody>${(d.periodic||[]).map(j=>`<tr><td style="padding:9px;border-bottom:1px solid var(--line)"><b>${esc(j.label)}</b><div class="muted">${esc(j.name)} · checks every ${interval(j.interval_seconds)}</div></td><td style="padding:9px;border-bottom:1px solid var(--line)">${esc(j.cadence)}</td><td style="padding:9px;border-bottom:1px solid var(--line);font-family:monospace">${esc(j.handler)}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <label>Class-date rules</label>
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:20px"><table style="border-collapse:collapse;min-width:100%;font-size:12.5px">
+      <thead><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Rule</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Window</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Action</th></tr></thead>
+      <tbody>${(d.class_events||[]).map(r=>`<tr><td style="padding:9px;border-bottom:1px solid var(--line)"><b>${esc(r.label)}</b><div class="muted">${esc(r.name)}</div></td><td style="padding:9px;border-bottom:1px solid var(--line);white-space:nowrap">${esc(r.window)}</td><td style="padding:9px;border-bottom:1px solid var(--line)">${esc(r.description)}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="two" style="align-items:start">
+      <section><label>Other timing rules</label>${(d.other_rules||[]).map(r=>`<div class="meta" style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(r.name)}</b><br>${esc(r.cadence)}</div>`).join('')}
+        <div class="meta" style="padding:8px 0;border-top:1px solid var(--line)"><b>Submission deadline campaign</b><br>${esc(deadline.what||'')} · starts ${esc(deadline.start||'')} · every ${esc(deadline.every||'')} days through ${esc(deadline.date||'')} plus deadline day</div>
+      </section>
+      <section><label>Manual only</label>${(d.manual_only||[]).map(t=>`<div class="meta" style="padding:8px 0;border-top:1px solid var(--line)"><b>${esc(t.label)}</b><br>${esc(t.cadence)}<div class="muted" style="font-family:monospace">${esc(t.handler)}</div></div>`).join('')||'<div class="muted">None</div>'}</section>
+    </div>`;
 }
 
 /* ---------------- audit log (read-only) ---------------- */

@@ -39,6 +39,17 @@ class ScheduleManifestTests(unittest.TestCase):
         self.assertNotIn("daily_treasurer_if_due", calls)
         self.assertNotIn("sweep_treasurer_sheet", calls)
 
+    def test_admin_manifest_describes_live_schedule(self):
+        deadline = {"what": "Spring classes", "start": "2026-11-01", "date": "2026-11-15", "every": "7"}
+        result = schedules.admin_schedule(deadline)
+        self.assertEqual({job["handler"] for job in result["periodic"]},
+                         {job.handler for job in schedules.PERIODIC_JOBS})
+        self.assertIn("sweep_treasurer_sheet", {task["handler"] for task in result["manual_only"]})
+        windows = {rule["name"]: rule["window"] for rule in result["class_events"]}
+        self.assertEqual(windows["low_enrollment_alert"], "8-14 days before the first session")
+        self.assertEqual(windows["student_thank_you"], "2-4 days after the last session")
+        self.assertEqual(result["deadline_campaign"]["every"], "7")
+
     def test_class_date_windows_include_boundaries(self):
         cases = (
             ("low_enrollment_alert", 8, True),
@@ -56,6 +67,14 @@ class ScheduleManifestTests(unittest.TestCase):
         for rule, days, expected in cases:
             with self.subTest(rule=rule, days=days):
                 self.assertEqual(schedules.class_event_due(rule, days), expected)
+
+    def test_class_event_window_summaries(self):
+        self.assertEqual(schedules.class_event_window("low_enrollment_alert"),
+                         "8-14 days before the first session")
+        self.assertEqual(schedules.class_event_window("student_thank_you"),
+                         "2-4 days after the last session")
+        self.assertEqual(schedules.class_event_window("after_class_note_request"),
+                         "1 day after the last session")
 
     def test_deadline_campaign_cadence_and_deadline_day(self):
         start = date(2026, 11, 1)

@@ -10,7 +10,7 @@ emails are behind a stubbed integration layer that logs what it *would* do,
 until real account credentials are available.
 """
 import http.server, socketserver, json, sqlite3, os, hashlib, secrets, urllib.parse, datetime, http.cookies, random, re, base64, html, hmac
-import integrations, mailer, gcal, pdfgen, schedules, threading, time, io
+import integrations, mailer, gcal, pdfgen, schedules, db_browser, threading, time, io
 PROCESS_STARTED = time.time()
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -4033,6 +4033,42 @@ class H(http.server.BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(body); return
 
     def api_get(self, p):
+        if p == "/api/admin/schedule":
+            if not self.require("admin"): return
+            return self.send_json(schedules.admin_schedule(deadline_settings()),
+                                  headers={"Cache-Control": "no-store"})
+        if p == "/api/admin/db-tables":
+            if not self.require("admin"): return
+            c = db_browser.open_readonly(DB)
+            try:
+                tables = db_browser.table_summaries(c)
+            finally:
+                c.close()
+            return self.send_json({
+                "tables": tables,
+                "db_bytes": os.path.getsize(DB) if os.path.exists(DB) else 0,
+            }, headers={"Cache-Control": "no-store"})
+        if p == "/api/admin/db-rows":
+            if not self.require("admin"): return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            table = (query.get("table") or [""])[0]
+            if not table:
+                return self.send_json({"error": "Choose a table."}, 400,
+                                      headers={"Cache-Control": "no-store"})
+            try:
+                page = max(1, int((query.get("page") or ["1"])[0]))
+            except ValueError:
+                return self.send_json({"error": "Page must be a positive number."}, 400,
+                                      headers={"Cache-Control": "no-store"})
+            c = db_browser.open_readonly(DB)
+            try:
+                result = db_browser.table_page(c, table, page, (query.get("q") or [""])[0])
+            except KeyError:
+                return self.send_json({"error": "Unknown database table."}, 404,
+                                      headers={"Cache-Control": "no-store"})
+            finally:
+                c.close()
+            return self.send_json(result, headers={"Cache-Control": "no-store"})
         if p == "/api/version":
             # open_slots is deliberately public: it says nothing beyond what the
             # published class listings do, and it lets a deploy be verified from
