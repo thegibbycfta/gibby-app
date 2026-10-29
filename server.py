@@ -10,7 +10,7 @@ emails are behind a stubbed integration layer that logs what it *would* do,
 until real account credentials are available.
 """
 import http.server, socketserver, json, sqlite3, os, hashlib, secrets, urllib.parse, datetime, http.cookies, random, re, base64, html, hmac
-import integrations, mailer, gcal, pdfgen, threading, time, io
+import integrations, mailer, gcal, pdfgen, schedules, threading, time, io
 PROCESS_STARTED = time.time()
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1255,13 +1255,13 @@ def sweep_treasurer_sheet():
         ORDER BY cl.id""").fetchall()]
     counts = {r["class_id"]: r["n"] for r in c.execute(
         "SELECT class_id, COUNT(*) AS n FROM registrations WHERE refunded=0 GROUP BY class_id")}
-    c.close()
     headers = ["ID","Class","Instructor","Date","Status","Tickets sold","Ticket $",
                "Buyers paid $","Eventbrite fees $","Paid out to Gibby $","Refunded $",
                "Pay model","Instructor pay owed $","Paid?","Paid on","Paid amount $",
                "Materials (Gibby) $","Reimbursed to instructor $","Net to Gibby $","Money synced"]
     reimb = {r["class_id"]: r["amt"] for r in c.execute(
         "SELECT class_id, SUM(amount) AS amt FROM reimbursements WHERE status IN ('approved','paid') GROUP BY class_id")}
+    c.close()
     out = []
     tot = {"payout":0.0,"fees":0.0,"gross":0.0,"owed":0.0,"paid":0.0,"net":0.0,"sold":0}
     for cl in rows_db:
@@ -1524,7 +1524,7 @@ def resend_expired_invites():
             latest = c.execute("SELECT expires FROM password_resets WHERE user_id=? ORDER BY expires DESC LIMIT 1", (u["id"],)).fetchone()
             if not latest or latest["expires"] > nowi: continue     # never invited this way, or link still good
             tok = secrets.token_urlsafe(24)
-            exp = (datetime.datetime.now() + datetime.timedelta(days=7)).isoformat()
+            exp = (datetime.datetime.now() + datetime.timedelta(days=schedules.INVITE_LINK_DAYS)).isoformat()
             c.execute("INSERT INTO password_resets(token,user_id,expires) VALUES(?,?,?)", (tok, u["id"], exp))
             c.commit()
             first = (u["name"] or "").split(" ")[0] or "there"
@@ -1567,11 +1567,9 @@ def contract_ready_email(instr, cls, base_url=None, reminder=False):
         f"One quick step before it goes live: read and sign your instructor contract in the app.\n\n" + steps +
         f"It takes about a minute. Once you sign, we will email you a copy for your records.\n\nThe Gibby")
 
-CONTRACT_REMINDER_DAYS = 3
-
 def sweep_contract_reminders():
-    """Hourly: any contract sent 3+ days ago and still unsigned gets one reminder."""
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=CONTRACT_REMINDER_DAYS)).isoformat(timespec="seconds")
+    """Hourly: any contract sent the configured number of days ago gets one reminder."""
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=schedules.CONTRACT_REMINDER_DAYS)).isoformat(timespec="seconds")
     c = db()
     rows = [dict(r) for r in c.execute("""SELECT c.*, u.email AS instr_email, u.name AS instr_name
         FROM classes c JOIN users u ON u.id=c.instructor_id
@@ -1906,7 +1904,7 @@ def bg_paused():
 
 def sweep_paperwork_reminders():
     """Hourly: anything requested 3+ days ago, still open and never reminded."""
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=CONTRACT_REMINDER_DAYS)).isoformat(timespec="seconds")
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=schedules.CONTRACT_REMINDER_DAYS)).isoformat(timespec="seconds")
     c = db()
     rows = [dict(r) for r in c.execute("""SELECT p.*, u.name, u.email FROM paperwork p JOIN users u ON u.id=p.user_id
         WHERE p.status='requested' AND p.requested_at<=? AND p.reminded_at IS NULL AND u.deleted_at IS NULL""", (cutoff,)).fetchall()]
@@ -2362,7 +2360,8 @@ def send_admin_digest(force=False):
     """Every Monday from 7 AM (once), or on demand from Connections."""
     today = datetime.date.today().isoformat()
     if not force:
-        if datetime.date.today().weekday() != 0 or datetime.datetime.now().hour < 7: return False
+        if (datetime.date.today().weekday() != schedules.ADMIN_DIGEST_WEEKDAY
+            or datetime.datetime.now().hour < schedules.ADMIN_DIGEST_HOUR): return False
         if _meta_get("last_digest_day") == today: return False
     c = db(); text = admin_digest_text(c); admins = emails_for(c, "WHERE role='admin'"); c.close()
     if not admins: return False
@@ -2908,7 +2907,7 @@ def send_deadline_reminders(c, today, force=False, cfg=None):
         dl = datetime.date.fromisoformat(ds["date"]); st = datetime.date.fromisoformat(ds["start"]); every = max(1, int(ds["every"]))
     except (ValueError, TypeError):
         return 0
-    due = (today == dl) or (st <= today <= dl and (today - st).days % every == 0)
+    due = schedules.deadline_campaign_due(today, st, dl, every)
     if not (due or force): return 0
     try:
         c.execute("INSERT INTO email_log(class_id,email_type,sent_at,recipients) VALUES(0,?,?,0)",
@@ -3145,7 +3144,7 @@ def run_scheduler(asof=None):
         if cls["status"] == "approved":
             if end_days >= 0 and ensure_help_card(c, cls):
                 actions.append(f"help card posted for {cls['title']}")
-            if 7 < days <= 14 and enrolled < (cls["min_p"] or 0):
+            if schedules.class_event_due("low_enrollment_alert", days) and enrolled < (cls["min_p"] or 0):
                 sent, why = send_class_email(c, cls, "low_alert", emails_for(c,"WHERE role='admin'"),
                     f"Low enrollment: {cls['title']}",
                     f"\"{cls['title']}\" on {cls['slot_date']} has {enrolled}/{cls['min_p']} registered, two weeks out. Consider promoting it.",
@@ -3153,7 +3152,7 @@ def run_scheduler(asof=None):
                 if sent:
                     c.execute("UPDATE classes SET low_alerted=1 WHERE id=?",(cls["id"],))
                     actions.append(f"low-enroll alert: {cls['title']}")
-            if days == 7 and enrolled < (cls["min_p"] or 0):
+            if schedules.class_event_due("under_minimum_decision", days) and enrolled < (cls["min_p"] or 0):
                 # Nothing is cancelled and no student is emailed without a person
                 # deciding. A week out and under minimum, the admins get one urgent
                 # nudge; the dashboard's Keep open / Cancel buttons are the decision.
@@ -3169,7 +3168,7 @@ def run_scheduler(asof=None):
             # No "final numbers" email at the registration cutoff: the owner asked for
             # it to stop (Sep 21, 2026). Eventbrite still closes sales on its own and
             # the roster email the day before carries the count.
-            if days == 2 and enrolled > 0:
+            if schedules.class_event_due("staff_reminder_nudge", days) and enrolled > 0:
                 # The student reminder is sent by a PERSON: this nudges the
                 # instructor and admins, and the app's Send reminder button (with
                 # its own once-only guard) is the approval.
@@ -3182,7 +3181,7 @@ def run_scheduler(asof=None):
                     f"their logistics. It only goes out when you press it.",
                     today, cfg)
                 if sent: actions.append(f"48h reminder nudge to staff: {cls['title']}")
-            if days == 1 and enrolled > 0:
+            if schedules.class_event_due("instructor_roster", days) and enrolled > 0:
                 # The instructor gets tomorrow's roster: who is coming, with contact
                 # details. Instructor-facing, so the approval rule does not apply.
                 instr_row = c.execute("SELECT name,email FROM users WHERE id=?",(cls["instructor_id"],)).fetchone()
@@ -3212,9 +3211,11 @@ def run_scheduler(asof=None):
                         f"This list is just for you; students are not copied on it.\n\n"
                         f"Have a great class,\nThe Gibby", today, cfg)
                     if sent: actions.append(f"day-before roster to {instr_row['name']}: {cls['title']}")
-        if end_days in (-1, -2, -3, -4) and followup_exempt(c, cls):
-            if end_days == -1: actions.append(f"no after-class email for {cls['title']}: {followup_exempt(c, cls)}")
-        elif end_days == -1:      # the day after the LAST session, not the first
+        if (schedules.class_event_due("after_class_note_request", end_days)
+                or schedules.class_event_due("student_thank_you", end_days)) and followup_exempt(c, cls):
+            if schedules.class_event_due("after_class_note_request", end_days):
+                actions.append(f"no after-class email for {cls['title']}: {followup_exempt(c, cls)}")
+        elif schedules.class_event_due("after_class_note_request", end_days):
             # Ask the instructor for their note. It goes to students tomorrow
             # morning in their name (no admin approval), or The Gibby's own
             # thank-you goes alone if they skip it.
@@ -3240,7 +3241,9 @@ def run_scheduler(asof=None):
                 actions.append(f"asked {instr_row['name']} to write the follow-up: {cls['title']}"
                                if sent else f"follow-up request suppressed for {cls['title']}: {why}")
                 # One nudge that evening if the note is still unwritten.
-                evening = (asof is None and datetime.datetime.now().hour >= 17)
+                evening = (asof is None
+                           and datetime.datetime.now().hour >= schedules.AFTER_CLASS_NOTE_REMINDER_HOUR
+                           and schedules.class_event_due("after_class_note_reminder", end_days))
                 if evening and cls.get("followup_status") == "awaiting_instructor" and not cls.get("followup_reminded_at"):
                     sent, why = send_class_email(c, cls, "followup_reminder", [instr_row["email"]],
                         f"Reminder: your note to students for {cls['title']}",
@@ -3251,13 +3254,17 @@ def run_scheduler(asof=None):
                     if sent:
                         c.execute("UPDATE classes SET followup_reminded_at=? WHERE id=?", (now(), cls["id"]))
                         actions.append(f"follow-up reminder to {instr_row['name']}: {cls['title']}")
-        if -4 <= end_days <= -2 and not email_sent_at(c, cls["id"], "followup") and not followup_exempt(c, cls):
+        if (schedules.class_event_due("student_thank_you", end_days)
+            and not email_sent_at(c, cls["id"], "followup") and not followup_exempt(c, cls)):
             # Two mornings after the last session: the students' thank-you, with
             # the instructor's note on top when they wrote one.
             sent, why = send_after_class(c, cls, "followup", today, cfg)
             actions.append(f"after-class email for {cls['title']}: {why}" if sent
                            else f"after-class email suppressed for {cls['title']}: {why}")
-        if -6 <= end_days <= -3 and email_sent_at(c, cls["id"], "followup") and not followup_exempt(c, cls):
+        if (schedules.class_event_due("marketing_request", end_days)
+            and email_sent_at(c, cls["id"], "followup")
+            and not email_sent_at(c, cls["id"], "marketing_request")
+            and not followup_exempt(c, cls)):
             # The day after the thank-you went: one more ask, this time for
             # marketing. Photos and videos here go to the Gibby's queue, never
             # to students, and nothing posts without an admin's approval.
@@ -3304,7 +3311,7 @@ def run_scheduler(asof=None):
     except Exception as e:
         print("[opportunities] auto-close error:", e)
     try:
-        n = send_deadline_reminders(c, today, cfg=cfg)
+        n = send_deadline_reminders(c, today)
         if n: actions.append(f"submission-deadline reminder to {n} instructors")
     except Exception as e:
         print("[deadline] error:", e)
@@ -3317,7 +3324,7 @@ def run_scheduler(asof=None):
             exp = datetime.date.fromisoformat(
                 os.environ.get("FB_TOKEN_EXPIRES", "2026-10-23").strip())
             left = (exp - today).days
-            for mark in (14, 2):
+            for mark in schedules.FACEBOOK_TOKEN_WARNING_DAYS:
                 if left > mark: continue
                 try:
                     c.execute("INSERT INTO email_log(class_id,email_type,sent_at,recipients) VALUES(0,?,?,0)",
@@ -3424,52 +3431,55 @@ def sync_calendar():
         LAST_SYNC_ERROR = f"{type(e).__name__}: {e}"
         raise
 
+def sync_approved_class_money():
+    c = db()
+    live = [r["id"] for r in c.execute(
+        "SELECT id FROM classes WHERE status='approved' AND deleted_at IS NULL")]
+    c.close()
+    for cid in live:
+        sync_registrations(cid)
+        sync_order_money(cid)
+
 def scheduler_loop():
-    # Calendar slots refresh every 5 minutes so a change on the Gibby calendar
-    # shows up almost immediately. The heavier lifecycle work (emails, Eventbrite
-    # attendee sync) stays hourly; its day-based rules only fire once per class.
-    SYNC_EVERY, LIFECYCLE_EVERY = 300, 3600
-    last_lifecycle = 0
+    last_calendar_sync = None
+    last_runs = {job.name: None for job in schedules.PERIODIC_JOBS}
+    handlers = {
+        "run_scheduler": run_scheduler,
+        "sweep_contracts_to_drive": sweep_contracts_to_drive,
+        "sweep_contract_reminders": sweep_contract_reminders,
+        "sweep_paperwork_reminders": sweep_paperwork_reminders,
+        "send_due_instructor_emails": send_due_instructor_emails,
+        "send_admin_digest": send_admin_digest,
+        "sweep_materials_sheet": sweep_materials_sheet,
+        "sweep_master_sheet": sweep_master_sheet,
+        "daily_backup_if_due": daily_backup_if_due,
+        "prune_sessions": prune_sessions,
+        "sync_approved_class_money": sync_approved_class_money,
+    }
+    missing = {job.handler for job in schedules.PERIODIC_JOBS} - handlers.keys()
+    if missing:
+        raise RuntimeError(f"Scheduler handlers are missing: {', '.join(sorted(missing))}")
     while True:
-        try:
-            r = sync_calendar()
-            if r and (r.get("added") or r.get("removed") or r.get("restored")):
-                print("[gcal] sync", r)
-        except Exception as e: print("[gcal] sync error:", e)
-        if time.time() - last_lifecycle >= LIFECYCLE_EVERY - 5:
-            last_lifecycle = time.time()
-            try: run_scheduler()
-            except Exception as e: print("[scheduler] error:", e)
-            try: sweep_contracts_to_drive()
-            except Exception as e: print("[contract] sweep error:", e)
-            try: sweep_contract_reminders()
-            except Exception as e: print("[contract] reminder error:", e)
-            try: sweep_paperwork_reminders()
-            except Exception as e: print("[paperwork] reminder error:", e)
-            try: send_due_instructor_emails()
-            except Exception as e: print("[instructor-email] error:", e)
-            try: send_admin_digest()
-            except Exception as e: print("[digest] error:", e)
-            try: sweep_materials_sheet()
-            except Exception as e: print("[materials] sweep error:", e)
-            try: sweep_master_sheet()
-            except Exception as e: print("[sheet] sweep error:", e)
-            try: daily_backup_if_due()
-            except Exception as e: print("[backup] error:", e)
-            try: daily_treasurer_if_due()
-            except Exception as e: print("[treasurer] error:", e)
-            prune_sessions()          # tidy away long-dead auth rows
+        tick = time.monotonic()
+        if (last_calendar_sync is None or
+                tick - last_calendar_sync >= schedules.CALENDAR_SYNC_INTERVAL_SECONDS):
+            last_calendar_sync = tick
             try:
-                c = db()
-                live = [r["id"] for r in c.execute(
-                    "SELECT id FROM classes WHERE status='approved' AND deleted_at IS NULL")]
-                c.close()
-                for cid in live:      # keeps enrolment honest for the low-enrollment rules
-                    sync_registrations(cid)
-                    sync_order_money(cid) # and the treasurer's actuals with it
+                r = sync_calendar()
+                if r and (r.get("added") or r.get("removed") or r.get("restored")):
+                    print("[gcal] sync", r)
             except Exception as e:
-                print("[registrations] hourly sync error:", e)
-        time.sleep(SYNC_EVERY)
+                print("[gcal] sync error:", e)
+        for job in schedules.PERIODIC_JOBS:
+            last_run = last_runs[job.name]
+            if last_run is not None and tick - last_run < job.interval_seconds - 5:
+                continue
+            last_runs[job.name] = tick
+            try:
+                handlers[job.handler]()
+            except Exception as e:
+                print(f"[{job.log_prefix}] {job.error_suffix}: {e}")
+        time.sleep(schedules.CALENDAR_SYNC_INTERVAL_SECONDS)
 
 # ------------------------------------------------------------- handler ----
 class H(http.server.BaseHTTPRequestHandler):
@@ -5198,15 +5208,20 @@ class H(http.server.BaseHTTPRequestHandler):
             # and the table is capped so this cannot be used to fill the disk.
             b = self.read_json()
             def cut(k, n): return (str(b.get(k) or ""))[:n]
+            section = cut("section",80)
+            message = cut("message",500)
+            if section == "site-embed-status":
+                print(f"[site-embed] {message[:300]} (path={cut('path',200)})")
+                return self.send_json({"ok": True})
             c = db()
             c.execute("""INSERT INTO client_errors(at,section,message,stack,path,email,role,agent)
                          VALUES(?,?,?,?,?,?,?,?)""",
-                      (now(), cut("section",80), cut("message",500), cut("stack",4000),
+                      (now(), section, message, cut("stack",4000),
                        cut("path",200), cut("email",120), cut("role",20), cut("agent",200)))
             c.execute("""DELETE FROM client_errors WHERE id NOT IN
                          (SELECT id FROM client_errors ORDER BY id DESC LIMIT 500)""")
             c.commit(); c.close()
-            print(f"[client error] {cut('section',80)}: {cut('message',300)} "
+            print(f"[client error] {section}: {message[:300]} "
                   f"(user={cut('email',120) or 'anonymous'} path={cut('path',200)})")
             return self.send_json({"ok": True})
         if p == "/api/run-scheduler":

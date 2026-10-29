@@ -1,0 +1,77 @@
+Use this flow:
+
+Create the new repo in the company GitHub account
+Go to https://github.com
+Sign in as the company account
+Click New repository
+Name it something like:
+gibby-app
+gibby-app-prod
+or whatever the company wants
+Keep it public/private based on policy
+Do not initialize with a README if you are pushing an existing repo, unless you want one
+Create the repo
+In your local checkout, add the new remote and push From your local repo:
+bash
+cd ~/path/to/gibby-app
+
+# review current branch
+git branch --show-current
+
+# optional: create a fresh branch if needed
+git checkout main   # or your working branch
+
+# add the company repo as a new remote
+git remote add company-origin https://github.com/<company-account>/<new-repo>.git
+
+# push current branch to the new repo
+git push -u company-origin HEAD
+If you want to push all branches:
+
+bash
+git push --all company-origin
+git push --tags company-origin
+Set the new repo as the active repo
+In GitHub, open the new repo
+Go to Settings → Branches → Default branch
+Set the default branch to the branch you want (usually main)
+If you have protection rules, configure them there
+Archive the old fork (optional but safest)
+Open the old repo:
+https://github.com/thegibbycfta/gibby-app
+Go to Settings
+Scroll to Danger Zone
+Click Archive repository
+Or leave it as-is if you want a historical backup/reference
+This keeps your old fork around without it being active.
+
+If you want to keep working from the new repo You can change your local remote names:
+bash
+git remote rename origin old-fork
+git remote rename company-origin origin
+Now your local repo points to the company repo instead of the old fork.
+
+Example final remote setup:
+
+bash
+git remote -v
+Should look something like:
+
+bash
+origin  https://github.com/<company-account>/<new-repo>.git (fetch)
+origin  https://github.com/<company-account>/<new-repo>.git (push)
+old-fork  https://github.com/thegibbycfta/gibby-app.git (fetch)
+old-fork  https://github.com/thegibbycfta/gibby-app.git (push)
+If the company account is an organization, use:
+
+https://github.com/<org-name>/<new-repo>.git
+instead of a user account.
+
+If you want, send me:
+
+the company GitHub account name or org name
+the repo name you want to create
+whether you want it public or private
+and I’ll give you the exact commands for your case with no guesswork.
+
+thegibbycfta/gibby-app-prod

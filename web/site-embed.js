@@ -37,7 +37,8 @@
    drives the arrows itself with a flex track. */
 (function(){
 var APP='https://gibby-app-ddjo.onrender.com';
-function rep(m){try{fetch(APP+'/api/client-error',{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify({section:'site-embed',message:m,agent:navigator.userAgent,path:location.pathname})})}catch(e){}}
+var SHOW_CLASSES=false;
+function rep(m,status){try{fetch(APP+'/api/client-error',{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify({section:status?'site-embed-status':'site-embed',message:m,agent:navigator.userAgent,path:location.pathname})})}catch(e){}}
 var MM={january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
 function pdate(txt){var m=/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})/i.exec(txt||'');if(!m)return null;var mo=MM[m[1].toLowerCase()],dy=+m[2];return(mo>=8?2026:2027)*10000+mo*100+dy}
 function esc(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
@@ -123,7 +124,7 @@ function renderInstructors(){
     if(cached&&JSON.stringify(cached)===JSON.stringify(d))return;
     paintArtists.title=d.title||''; paintArtists.page=d.artist_page||'';
     paintArtists(host,list,d.intro);
-    rep('artists='+list.length);
+    rep('artists='+list.length,true);
   }).catch(function(e){rep('artists fetch failed: '+e)});
 }
 /* Where an artist's own page lives. The app setting is either a folder
@@ -165,7 +166,7 @@ function paintArtists(host,list,intro){
         +(i.pronouns?' <span style="font-size:.7em;font-weight:400;opacity:.7">'+esc(i.pronouns)+'</span>':'')+'</h3>'
         +(i.skills&&i.skills.length?'<div style="font-size:.85em;opacity:.7;margin-bottom:8px">'+esc(i.skills.join(' \u00b7 '))+'</div>':'')
         +'<div style="white-space:pre-wrap">'+esc(i.bio)+'</div>'
-        +((i.classes||[]).length?'<div style="margin-top:12px;font-size:.9em"><b>Upcoming classes</b><div style="height:6px"></div>'+i.classes.map(function(c){return '<a href="'+esc(c.url)+'" target="_blank" rel="noopener" style="display:inline-block;margin:3px 2px;padding:7px 14px;border:1px solid currentColor;border-radius:999px;text-decoration:none;line-height:1.3">'+esc(c.title)+' \u00b7 '+esc(c.when)+' \u2192</a>'}).join('')+'</div>':'')
+        +((SHOW_CLASSES&&(i.classes||[]).length)?'<div style="margin-top:12px;font-size:.9em"><b>Upcoming classes</b><div style="height:6px"></div>'+i.classes.map(function(c){return '<a href="'+esc(c.url)+'" target="_blank" rel="noopener" style="display:inline-block;margin:3px 2px;padding:7px 14px;border:1px solid currentColor;border-radius:999px;text-decoration:none;line-height:1.3">'+esc(c.title)+' \u00b7 '+esc(c.when)+' \u2192</a>'}).join('')+'</div>':'')
         +((i.website||i.etsy||i.instagram)?'<p style="margin-top:8px">'+[['website',i.website],['etsy',i.etsy],['instagram',i.instagram]].filter(function(x){return x[1]}).map(function(x){return '<a href="'+esc(x[1])+'" target="_blank" rel="noopener">'+(x[0]==='website'?esc(x[1].replace(/^https?:\/\//,'').replace(/\/$/,'')):x[0]==='etsy'?'Etsy shop':'Instagram')+'</a>'}).join(' \u00b7 ')+'</p>':'')
         +'</div>';
     });
@@ -197,27 +198,28 @@ function renderArtist(){
     document.title=a.name+' \u00b7 '+(d.title||'Teaching Artists');
     var links=[['website',a.website],['instagram',a.instagram],['facebook',a.facebook],['tiktok',a.tiktok],['etsy',a.etsy]].filter(function(x){return x[1]});
     var lab={website:function(u){return esc(u.replace(/^https?:\/\//,'').replace(/\/$/,''))},instagram:function(){return 'Instagram'},facebook:function(){return 'Facebook'},tiktok:function(){return 'TikTok'},etsy:function(){return 'Etsy shop'}};
-    var cls=a.all_classes||[];
+    var cls=SHOW_CLASSES?(a.all_classes||[]):[];
     host.innerHTML=back
       +'<div style="display:grid;grid-template-columns:minmax(0,280px) minmax(0,1fr);gap:32px;align-items:start" class="gibby-artist-page">'
       +'<div>'+(a.img?'<img src="'+APP+a.img+'" alt="'+esc(a.name)+'" style="width:100%;aspect-ratio:4/5;object-fit:cover;object-position:center top;display:block;border-radius:0">':'<div style="width:100%;aspect-ratio:4/5;background:#EDE8DC"></div>')
       +(a.skills&&a.skills.length?'<div style="font-size:.85em;opacity:.7;margin-top:10px">'+esc(a.skills.join(' \u00b7 '))+'</div>':'')
       +(links.length?'<p style="margin-top:10px">'+links.map(function(x){return '<a href="'+esc(x[1])+'" target="_blank" rel="noopener">'+lab[x[0]](x[1])+'</a>'}).join(' \u00b7 ')+'</p>':'')+'</div>'
       +'<div><div style="white-space:pre-wrap;font-size:1.05em;line-height:1.6">'+esc(a.bio)+'</div>'
-      +'<h3 style="margin:28px 0 8px;font-family:var(--heading-font-font-family,inherit);font-weight:var(--heading-font-font-weight,500)">Upcoming classes with '+esc((a.name||'').split(' ')[0])+'</h3>'
+      +(SHOW_CLASSES?'<h3 style="margin:28px 0 8px;font-family:var(--heading-font-font-family,inherit);font-weight:var(--heading-font-font-weight,500)">Upcoming classes with '+esc((a.name||'').split(' ')[0])+'</h3>'
       +(cls.length?cls.map(function(c){return c.open
           ? '<a href="'+esc(c.url)+'" target="_blank" rel="noopener" style="display:block;margin:6px 0;padding:12px 16px;border:1px solid currentColor;text-decoration:none;line-height:1.3"><b>'+esc(c.title)+'</b><br><span style="font-size:.9em;opacity:.8">'+esc(c.when)+' \u00b7 register on Eventbrite \u2192</span></a>'
           : '<div style="display:block;margin:6px 0;padding:12px 16px;border:1px dashed currentColor;opacity:.7;line-height:1.3"><b>'+esc(c.title)+'</b><br><span style="font-size:.9em">'+esc(c.when)+' \u00b7 registration closed</span></div>'}).join('')
-        :'<p style="opacity:.75">Nothing open for sign-up right now. Check back soon, or see <a href="/art-workshops">all upcoming workshops</a>.</p>')
+        :'<p style="opacity:.75">Nothing open for sign-up right now. Check back soon, or see <a href="/art-workshops">all upcoming workshops</a>.</p>'):'')
       +'</div></div>'
       +'<style>@media(max-width:640px){.gibby-artist-page{grid-template-columns:1fr!important}}</style>';
     adminEditLink(host, a.id);
-    rep('artist page '+slug);
+    rep('artist page '+slug,true);
   }).catch(function(e){ host.innerHTML=back+'<p>Could not load this artist right now.</p>'; rep('artist fetch failed: '+e); });
 }
 /* Classes only: the rest of an artist's page is ordinary Squarespace content
    Michelle edits; this block keeps the list of upcoming classes current. */
 function renderArtistClasses(host, slug){
+  if(!SHOW_CLASSES){ host.innerHTML=''; return; }
   if(!slug){ host.innerHTML=''; return; }
   host.innerHTML='<div style="opacity:.6;padding:12px 0">Loading classes\u2026</div>';
   fetch(APP+'/embed/instructor/'+slug+'.json').then(function(r){return r.json()}).then(function(d){
@@ -228,7 +230,7 @@ function renderArtistClasses(host, slug){
           ? '<a href="'+esc(c.url)+'" target="_blank" rel="noopener" style="display:block;margin:6px 0;padding:12px 16px;border:1px solid currentColor;text-decoration:none;line-height:1.3"><b>'+esc(c.title)+'</b><br><span style="font-size:.9em;opacity:.8">'+esc(c.when)+' \u00b7 register on Eventbrite \u2192</span></a>'
           : '<div style="display:block;margin:6px 0;padding:12px 16px;border:1px dashed currentColor;opacity:.7;line-height:1.3"><b>'+esc(c.title)+'</b><br><span style="font-size:.9em">'+esc(c.when)+' \u00b7 registration closed</span></div>'}).join('')
         :'<p style="opacity:.75">Nothing open for sign-up right now. Check back soon, or see <a href="/art-workshops">all upcoming workshops</a>.</p>');
-    rep('artist classes '+slug);
+    rep('artist classes '+slug,true);
   }).catch(function(e){ host.innerHTML=''; rep('artist classes failed: '+e); });
 }
 /* Native artist list: under each artist Michelle places a Code block with
@@ -236,6 +238,7 @@ function renderArtistClasses(host, slug){
    it with that artist's next three classes open for sign-up, or nothing. One
    fetch for the whole page. */
 function renderArtistClassLines(){
+  if(!SHOW_CLASSES)return;
   var hosts=document.querySelectorAll('.gibby-artist-classes:not([data-done])');
   if(!hosts.length)return;
   for(var k=0;k<hosts.length;k++)hosts[k].setAttribute('data-done','1');
@@ -246,7 +249,7 @@ function renderArtistClassLines(){
       var cls=(a&&a.classes)||[];
       h.innerHTML=cls.length?'<div style="font-size:.9em"><b>Upcoming classes</b><div style="height:6px"></div>'+cls.map(function(c){return '<a href="'+esc(c.url)+'" target="_blank" rel="noopener" style="display:inline-block;margin:3px 2px;padding:7px 14px;border:1px solid currentColor;border-radius:999px;text-decoration:none;line-height:1.3">'+esc(c.title)+' \u00b7 '+esc(c.when)+' \u2192</a>'}).join('')+'</div>':'';
     }
-    rep('artist class lines='+hosts.length);
+    rep('artist class lines='+hosts.length,true);
   }).catch(function(e){rep('artist class lines failed: '+e)});
 }
 /* One line under the Art Workshops intro pointing at the teaching artists page.
@@ -426,7 +429,8 @@ function ginit(){
   renderInstructors();
   renderArtist();
   renderArtistClassLines();
-  if(!onWorkshops&&!onHome)return;
+  if(onWorkshops)artistsLink();
+  if(!SHOW_CLASSES||(!onWorkshops&&!onHome))return;
   var tries=0;
   function load(){
     fetch(APP+'/embed.json').then(function(r){return r.json()}).then(function(d){
@@ -434,7 +438,6 @@ function ginit(){
       var classes=applyOverrides(d.classes||[],rules);
       var msg='v4';
       if(onWorkshops){
-        artistsLink();
         var list=document.querySelector('.user-items-list-simple');
         if(list){
           list.querySelectorAll('.gibby-item').forEach(function(x){x.remove()});
@@ -445,7 +448,7 @@ function ginit(){
       if(onHome){
         msg+=' carousels+'+renderHomeCarousels(classes);
       }
-      rep(msg+' (rules='+rules.length+')');
+      rep(msg+' (rules='+rules.length+')',true);
     }).catch(function(e){rep('fetch failed try '+tries+': '+e);if(++tries<6)setTimeout(load,2000*tries)})
   }
   load()
